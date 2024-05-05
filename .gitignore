@@ -1,0 +1,9 @@
+**/_build
+**/.merlin
+.DS_Store
+*.sexp
+spacetime-*
+.vscode
+*.code-workspace
+*.install
+drop/
