@@ -20,6 +20,12 @@ let float_ts_of_date_string ds =
   fst @@ Unix.mktime parsed
 ;;
 
+let float_assoc_opt k kv =
+  List.assoc_opt k kv |> Option.map Float.of_string |> Option.map (fun f -> `Float f)
+;;
+
+let opt_prop name value = Option.map (fun value -> name, value) value
+
 let rec parse_records input ~metadata ~els encode =
   if Xmlm.eoi input
   then ()
@@ -59,7 +65,7 @@ let rec parse_records input ~metadata ~els encode =
 
 let parse_records input encode = parse_records input ~metadata:[] ~els:[] encode
 
-let rec parse_workouts input ~statistics ~els encode =
+let rec parse_workouts input ~statistics ~events ~els encode =
   if Xmlm.eoi input
   then ()
   else (
@@ -79,21 +85,15 @@ let rec parse_workouts input ~statistics ~els encode =
         ; "end", `Float endDate
         ]
       in
-      parse_workouts input ~statistics ~els:(`Workout workout :: els) encode
+      parse_workouts input ~statistics ~events ~els:(`Workout workout :: els) encode
     | `El_start ((_, "WorkoutStatistics"), attributes), _ ->
       let kv = List.map (fun ((_, key), value) -> key, value) attributes in
-      let float_assoc_opt k =
-        List.assoc_opt k kv
-        |> Option.map Float.of_string
-        |> Option.map (fun f -> `Float f)
-      in
       let typ = List.assoc "type" kv in
-      let sum = float_assoc_opt "sum" in
-      let average = float_assoc_opt "average" in
-      let minimum = float_assoc_opt "minimum" in
-      let maximum = float_assoc_opt "maximum" in
+      let sum = float_assoc_opt "sum" kv in
+      let average = float_assoc_opt "average" kv in
+      let minimum = float_assoc_opt "minimum" kv in
+      let maximum = float_assoc_opt "maximum" kv in
       let unit = List.assoc_opt "unit" kv |> Option.map (fun f -> `String f) in
-      let opt_prop name value = Option.map (fun value -> name, value) value in
       let statistics =
         `O
           (List.filter_map
@@ -107,16 +107,42 @@ let rec parse_workouts input ~statistics ~els encode =
              ])
         :: statistics
       in
-      parse_workouts input ~statistics ~els:(`Statistics :: els) encode
-    | `El_start _, _ -> parse_workouts input ~statistics ~els:(`Ignored :: els) encode
+      parse_workouts input ~statistics ~events ~els:(`Statistics :: els) encode
+    | `El_start ((_, "WorkoutEvent"), attributes), _ ->
+      let kv = List.map (fun ((_, key), value) -> key, value) attributes in
+      let typ = List.assoc "type" kv in
+      let date = float_ts_of_date_string @@ List.assoc "date" kv in
+      let duration = float_assoc_opt "duration" kv in
+      let durationUnit =
+        List.assoc_opt "durationUnit" kv |> Option.map (fun f -> `String f)
+      in
+      let events =
+        `O
+          (List.filter_map
+             Fun.id
+             [ Some ("type", `String typ)
+             ; Some ("date", `Float date)
+             ; opt_prop "duration" duration
+             ; opt_prop "durationUnit" durationUnit
+             ])
+        :: events
+      in
+      parse_workouts input ~statistics ~events ~els:(`Event :: els) encode
+    | `El_start _, _ ->
+      parse_workouts input ~statistics ~events ~els:(`Ignored :: els) encode
     | `El_end, `Workout workout :: _ ->
-      json_encode_obj_repr (`O (("statistics", `A statistics) :: workout)) encode;
-      parse_workouts input ~statistics:[] ~els:(List.tl els) encode
-    | `El_end, _ -> parse_workouts input ~statistics ~els:(List.tl els) encode
-    | `Data _, _ | `Dtd _, _ -> parse_workouts input ~statistics ~els encode)
+      let workout =
+        `O (List.append [ "events", `A events; "statistics", `A statistics ] workout)
+      in
+      json_encode_obj_repr workout encode;
+      parse_workouts input ~statistics:[] ~events:[] ~els:(List.tl els) encode
+    | `El_end, _ -> parse_workouts input ~statistics ~events ~els:(List.tl els) encode
+    | `Data _, _ | `Dtd _, _ -> parse_workouts input ~statistics ~events ~els encode)
 ;;
 
-let parse_workouts input encode = parse_workouts input ~statistics:[] ~els:[] encode
+let parse_workouts input encode =
+  parse_workouts input ~statistics:[] ~events:[] ~els:[] encode
+;;
 
 let export_xml_to_json input_xml output_json =
   let out_channel = Stdlib.open_out output_json in
